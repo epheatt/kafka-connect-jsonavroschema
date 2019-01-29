@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2019 Eric Pheatt (eric.pheatt@gmail.com) Licensed under
+	the Apache License, Version 2.0 (the "License"); you may not use this file
+	except in compliance with the License. You may obtain a copy of the License
+	at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable
+	law or agreed to in writing, software distributed under the License is distributed
+	on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+	express or implied. See the License for the specific language governing permissions
+	and limitations under the License. -->
+<project
+    xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.github.epheatt.kafka.connect</groupId>
+    <artifactId>kafka-connect-jsonavroschema</artifactId>
+    <packaging>jar</packaging>
+    <version>dev1.0-SNAPSHOT</version>
+    <name>kafka-connect-jsonavroschema</name>
+    <licenses>
+        <license>
+            <name>Apache License 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+    <scm>
+        <connection>scm:git:git://github.com/epheatt/kafka-connect-jsonavroschema.git</connection>
+        <developerConnection>scm:git:git@github.com:epheatt/kafka-connect-jsonavroschema.git</developerConnection>
+        <url>https://github.com/epheatt/kafka-connect-jsonavroschema</url>
+        <tag>HEAD</tag>
+    </scm>
+    <properties>
+        <confluent.version>5.0.1</confluent.version>
+        <kafka.version>2.0.1-cp1</kafka.version>
+        <junit.version>4.12</junit.version>
+        <junit.jupiter.version>5.0.0-RC3</junit.jupiter.version>
+        <junit.platform.version>1.0.0-RC3</junit.platform.version>
+        <junit.vintage.version>4.12.0-RC3</junit.vintage.version>
+        <junit.surefire.plugin.version>1.0.0-RC3</junit.surefire.plugin.version>
+        <easymock.version>3.3.1</easymock.version>
+        <powermock.version>1.6.2</powermock.version>
+        <powermock.api.easymock.version>1.6.2</powermock.api.easymock.version>
+        <avro.version>1.8.2</avro.version>
+        <commons-io.version>2.4</commons-io.version>
+        <joda.version>1.6.2</joda.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <confluent.maven.repo>http://packages.confluent.io/maven/</confluent.maven.repo>
+        <jackson.version>2.6.3</jackson.version>
+    </properties>
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <name>Confluent</name>
+            <url>${confluent.maven.repo}</url>
+        </repository>
+    </repositories>
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-api</artifactId>
+            <version>${kafka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-json</artifactId>
+            <version>${kafka.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-connect-avro-converter</artifactId>
+            <version>${confluent.version}</version>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-log4j12</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.powermock</groupId>
+            <artifactId>powermock-module-junit4</artifactId>
+            <version>${powermock.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+    </dependencies>
+    <build>
+        <defaultGoal>install</defaultGoal>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>2.5.1</version>
+                <inherited>true</inherited>
+                <configuration>
+                    <source>8</source>
+                    <target>8</target>
+                    <compilerArguments>
+                        <Xlint:all/>
+                        <!-- bootstrap class path not set in conjunction with -source 1.7 -->
+                        <Xlint:-options/>
+                        <!-- serializable class ... has no definition of serialVersionUID -->
+                        <Xlint:-serial/>
+                        <!-- bad path element ".../repository/org/apache/derby/derby/10.10.2.0/derbyLocale_*.jar": no such file or directory -->
+                        <Xlint:-path/>
+                        <!--
+                        WALFile.java:[333,16] [deprecation] sync() in Syncable has been deprecated
+                        Apparently SuppressWarnings("deprecation") doesn't cover this on JDK 7
+                        -->
+                        <Xlint:-deprecation/>
+                        <!-- Needed for DataWriter.java because @SuppressWarnings("unchecked") doesn't cover this on JDK 7 -->
+                        <Xlint:-unchecked/>
+                        <Werror/>
+                    </compilerArguments>
+                    <showWarnings>true</showWarnings>
+                    <showDeprecation>false</showDeprecation>
+                </configuration>
+            </plugin>
+            <plugin>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <configuration>
+                    <descriptors>
+                        <descriptor>src/assembly/development.xml</descriptor>
+                        <descriptor>src/assembly/package.xml</descriptor>
+                    </descriptors>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>2.18.1</version>
+                <configuration>
+                    <argLine>-Djava.awt.headless=true</argLine>
+                    <forkMode>pertest</forkMode>
+                </configuration>
+            </plugin>
+        </plugins>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+    </build>
+</project>
