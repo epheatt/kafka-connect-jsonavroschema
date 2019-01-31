@@ -3,10 +3,8 @@ package com.github.epheatt.kafka.connect;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import io.confluent.connect.avro.AvroConverter;
 import io.confluent.connect.avro.AvroConverterConfig;
 import io.confluent.connect.avro.AvroData;
 import io.confluent.connect.avro.AvroDataConfig;
@@ -19,25 +17,18 @@ import org.apache.kafka.common.cache.LRUCache;
 import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.connect.json.JsonConverter;
-import org.apache.kafka.connect.json.JsonConverterConfig;
 import org.apache.kafka.connect.json.JsonDeserializer;
 import org.apache.kafka.connect.json.JsonSerializer;
-import org.apache.kafka.connect.json.JsonSchema;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.errors.RetriableException;
-import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.ConverterType;
-import org.apache.kafka.connect.storage.StringConverterConfig;
 
 import java.util.Map;
 import java.util.HashMap;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.util.Collection;
-import java.util.Collections;
 
 
 import org.slf4j.Logger;
@@ -46,58 +37,70 @@ import org.slf4j.LoggerFactory;
 public class JsonToAvroSchemaConverter extends JsonConverter {
     private static final Logger log = LoggerFactory.getLogger(JsonToAvroSchemaConverter.class);
 
+    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final String TIMESTAMP_MILLIS = "timestamp-millis";
+    private static final String SCHEMAS_ENABLE_CONFIG = "schemas.enable";
+    private static final boolean SCHEMAS_ENABLE_DEFAULT = true;
+    private static final String SCHEMAS_CACHE_SIZE_CONFIG = "schemas.cache.size";
+    private static final int SCHEMAS_CACHE_SIZE_DEFAULT = 1000;
+    private static final String TYPE_CONFIG = "converter.type";
+    private enum ConverterType {KEY, VALUE, HEADER};
+    private static final String ENVELOPE_SCHEMA_FIELD_NAME = "schema";
+    private static final String ENVELOPE_PAYLOAD_FIELD_NAME = "payload";
+    private static final String ENVELOPE_PAYLOAD_POINTER = "payload.pointer";
+
     private SchemaRegistryClient schemaRegistry;
     private boolean isKey;
     private AvroData avroData;
     private String payloadPointer;
 
-    private boolean enableSchemas = JsonConverterConfig.SCHEMAS_ENABLE_DEFAULT;
-    private int cacheSize = JsonConverterConfig.SCHEMAS_CACHE_SIZE_DEFAULT;
-    private Cache<Schema, ObjectNode> fromConnectSchemaCache;
-    private Cache<JsonNode, Schema> toConnectSchemaCache;
+    private boolean enableSchemas = SCHEMAS_ENABLE_DEFAULT;
+    private int cacheSize = SCHEMAS_CACHE_SIZE_DEFAULT;
+    private Cache<String, org.apache.avro.Schema> topicSchemaCache;
     private final JsonSerializer serializer = new JsonSerializer();
     private final JsonDeserializer deserializer = new JsonDeserializer();
 
-    private static final ObjectMapper mapper = new ObjectMapper();
-    private static final String TIMESTAMP_MILLIS = "timestamp-millis";
-    private static final String ENVELOPE_SCHEMA_FIELD_NAME = "schema";
-    private static final String ENVELOPE_PAYLOAD_FIELD_NAME = "payload";
 
-    public JsonToAvroSchemaConverter (SchemaRegistryClient client) {
+
+    public JsonToAvroSchemaConverter(SchemaRegistryClient client) {
         schemaRegistry = client;
     }
 
-    public JsonToAvroSchemaConverter () {
+    public JsonToAvroSchemaConverter() {
 
     }
 
     public void configure(Map<String, ?> configs) {
         AvroConverterConfig avroConverterConfig = new AvroConverterConfig(configs);
-        JsonConverterConfig jsonConverterConfig = new JsonConverterConfig(configs);
 
-        enableSchemas = jsonConverterConfig.schemasEnabled();
-        payloadPointer = (String) configs.getOrDefault("payload.pointer",null);
-        cacheSize = jsonConverterConfig.schemaCacheSize();
-        isKey = jsonConverterConfig.type() == ConverterType.KEY;
+        Object enableConfigsVal = configs.get(SCHEMAS_ENABLE_CONFIG);
+        if (enableConfigsVal != null)
+            enableSchemas = enableConfigsVal.toString().equals("true");
+        Object cacheSizeVal = configs.get(SCHEMAS_CACHE_SIZE_CONFIG);
+        if (cacheSizeVal != null)
+            cacheSize = Integer.parseInt((String) cacheSizeVal);
+        Object typeVal = configs.get(TYPE_CONFIG);
+        if (typeVal != null)
+            isKey = typeVal.toString().equals(ConverterType.KEY.name());
+        payloadPointer = (String) configs.getOrDefault(ENVELOPE_PAYLOAD_POINTER,null);
         serializer.configure(configs, isKey);
         deserializer.configure(configs, isKey);
         avroData = new AvroData(new AvroDataConfig(configs));
-        fromConnectSchemaCache = new SynchronizedCache<>(new LRUCache<Schema, ObjectNode>(cacheSize));
-        toConnectSchemaCache = new SynchronizedCache<>(new LRUCache<JsonNode, Schema>(cacheSize));
+        topicSchemaCache = new SynchronizedCache<>(new LRUCache<String, org.apache.avro.Schema>(cacheSize));
 
         if (schemaRegistry == null) {
             schemaRegistry =
                     new CachedSchemaRegistryClient(avroConverterConfig.getSchemaRegistryUrls(),
-                            avroConverterConfig.getMaxSchemasPerSubject(), configs);
+                            avroConverterConfig.getMaxSchemasPerSubject());
         }
-        super.configure(configs);
     }
 
     @Override
     public void configure(Map<String, ?> configs, boolean isKey) {
         Map<String, Object> conf = new HashMap<>(configs);
-        conf.put(StringConverterConfig.TYPE_CONFIG, isKey ? ConverterType.KEY.getName() : ConverterType.VALUE.getName());
+        conf.put(TYPE_CONFIG, isKey ? ConverterType.KEY.name() : ConverterType.VALUE.name());
         configure(conf);
+        super.configure(new HashMap<>(), isKey);
     }
 
     @Override
@@ -146,14 +149,19 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
      * @return the schema
      */
     private org.apache.avro.Schema fetchAvroSchemaFromSchemaRegistry(String subject) {
-        try {
-            int schemaId = schemaRegistry.getLatestSchemaMetadata(subject).getId();
-            return schemaRegistry.getBySubjectAndId(subject, schemaId);
-        } catch (Exception e) {
-            String errorMessage = "Error in fetching schema from registry for subject : " + subject;
-            log.error(errorMessage, e);
-            throw new RetriableException(errorMessage, e);
+        org.apache.avro.Schema schema = topicSchemaCache.get(subject);
+        if (schema == null) {
+            try {
+                int schemaId = schemaRegistry.getLatestSchemaMetadata(subject).getId();
+                schema = schemaRegistry.getBySubjectAndId(subject, schemaId);
+                topicSchemaCache.put(subject, schema);
+            } catch (Exception e) {
+                String errorMessage = "Error in fetching schema from registry for subject : " + subject;
+                log.error(errorMessage, e);
+                throw new RetriableException(errorMessage, e);
+            }
         }
+        return schema;
     }
 
     /**
