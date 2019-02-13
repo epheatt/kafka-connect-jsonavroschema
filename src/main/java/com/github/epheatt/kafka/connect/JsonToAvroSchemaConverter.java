@@ -63,6 +63,7 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
     private Cache<String, org.apache.avro.Schema> topicSchemaCache;
     private final JsonSerializer serializer = new JsonSerializer();
     private final JsonDeserializer deserializer = new JsonDeserializer();
+    private final JsonConverter jsonConverter = new JsonConverter();
 
     public JsonToAvroSchemaConverter(SchemaRegistryClient client) {
         schemaRegistry = client;
@@ -87,6 +88,7 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
         payloadPointer = (String) configs.getOrDefault(ENVELOPE_PAYLOAD_POINTER, null);
         serializer.configure(configs, isKey);
         deserializer.configure(configs, isKey);
+        jsonConverter.configure(new HashMap<String, String>(), isKey);
         avroData = new AvroData(new AvroDataConfig(configs));
         topicSchemaCache = new SynchronizedCache<>(new LRUCache<String, org.apache.avro.Schema>(cacheSize));
 
@@ -101,12 +103,11 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
         Map<String, Object> conf = new HashMap<>(configs);
         conf.put(TYPE_CONFIG, isKey ? ConverterType.KEY.name() : ConverterType.VALUE.name());
         configure(conf);
-        super.configure(new HashMap<>(), isKey);
     }
 
     @Override
     public byte[] fromConnectData(String topic, Schema schema, Object value) {
-        return super.fromConnectData(topic, schema, value);
+        return jsonConverter.fromConnectData(topic, schema, value);
     }
 
     @Override
@@ -127,7 +128,7 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
         if (enableSchemas) {
             ObjectNode envelope = mapper.createObjectNode();
             org.apache.avro.Schema schema = fetchAvroSchemaFromSchemaRegistry(topic);
-            envelope.set(ENVELOPE_SCHEMA_FIELD_NAME, asJsonSchema(avroData.toConnectSchema(schema)));
+            envelope.set(ENVELOPE_SCHEMA_FIELD_NAME, jsonConverter.asJsonSchema(avroData.toConnectSchema(schema)));
             if (payloadPointer != null && !payloadPointer.isEmpty()) {
                 jsonValue = jsonValue.at(payloadPointer);
             }
@@ -136,7 +137,7 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
         }
 
         try {
-            return super.toConnectData(topic, serializer.serialize(topic, jsonValue));
+            return jsonConverter.toConnectData(topic, serializer.serialize(topic, jsonValue));
         } catch (SerializationException e) {
             throw new DataException("Converting Kafka Connect data to byte[] failed due to serialization error: ", e);
         }
