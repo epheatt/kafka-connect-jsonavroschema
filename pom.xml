@@ -31,8 +31,8 @@
         <tag>HEAD</tag>
     </scm>
     <properties>
-        <confluent.version>3.3.0</confluent.version>
-        <kafka.version>0.11.0.0-cp1</kafka.version>
+        <confluent.version>3.3.2</confluent.version>
+        <kafka.version>0.11.0.3-cp1</kafka.version>
         <junit.version>4.12</junit.version>
         <junit.jupiter.version>5.0.0-RC3</junit.jupiter.version>
         <junit.platform.version>1.0.0-RC3</junit.platform.version>
@@ -46,13 +46,14 @@
         <joda.version>1.6.2</joda.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <confluent.maven.repo>http://packages.confluent.io/maven/</confluent.maven.repo>
-        <jackson.version>2.6.3</jackson.version>
+        <jackson.version>2.9.10</jackson.version>
+        <jackson-databind.version>2.9.10.1</jackson-databind.version>
     </properties>
     <repositories>
         <repository>
             <id>confluent</id>
             <name>Confluent</name>
-            <url>${confluent.maven.repo}</url>
+            <url>http://packages.confluent.io/maven/</url>
         </repository>
     </repositories>
     <dependencies>
@@ -65,6 +66,12 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>connect-json</artifactId>
             <version>${kafka.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>${avro.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -111,7 +118,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
+            <version>${jackson-databind.version}</version>
         </dependency>
     </dependencies>
     <build>

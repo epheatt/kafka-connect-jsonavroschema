@@ -1,5 +1,6 @@
 package com.github.epheatt.kafka.connect;
 
+import avro.shaded.com.google.common.collect.ImmutableMap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -47,15 +48,17 @@ public class JsonToAvroSchemaConverterTest {
             AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, "http://fake-url");
 
     private static final ObjectMapper mapper = new ObjectMapper();
-    private final SchemaRegistryClient schemaRegistry;
-    private final JsonToAvroSchemaConverter converter;
-    private final AvroData avroData;
+    private final SchemaRegistryClient schemaRegistry = new MockSchemaRegistryClient();
+    private final JsonToAvroSchemaConverter converter = new JsonToAvroSchemaConverter(schemaRegistry);
+    private final AvroData avroData = new AvroData(new AvroDataConfig(SR_CONFIG));
 
+    /*
     public JsonToAvroSchemaConverterTest() {
         schemaRegistry = new MockSchemaRegistryClient();
         converter = new JsonToAvroSchemaConverter(schemaRegistry);
         avroData = new AvroData(new AvroDataConfig(SR_CONFIG));
     }
+    */
 
     @Before
     public void setUp() {
@@ -75,18 +78,22 @@ public class JsonToAvroSchemaConverterTest {
     @Ignore
     public void testAvroSchemaToJsonSchema() {
         org.apache.avro.Schema avroStringSchema = org.apache.avro.SchemaBuilder.builder().stringType();
-        avroStringSchema.addProp("length",
-                org.codehaus.jackson.node.JsonNodeFactory.instance.numberNode(255));
+        //avroStringSchema.addProp("length",
+        //        org.codehaus.jackson.node.JsonNodeFactory.instance.numberNode(255));
         avroStringSchema.addProp("connect.name", "io.confluent.stringtype");
         avroStringSchema.addProp("connect.version",
                 org.codehaus.jackson.node.JsonNodeFactory.instance.numberNode(2));
+        avroStringSchema.addProp("default", "foo");
+        //avroStringSchema.addProp("doc", "doc");
         avroStringSchema.addProp("connect.doc", "doc");
         avroStringSchema.addProp("connect.default", "foo");
+        avroStringSchema.addProp("connect.name", "io.confluent.stringtype");
+        Map<String, String> connectPropsMap = ImmutableMap.of(
+                "foo","bar",
+                "baz","baz",
+                "length","255");
         org.codehaus.jackson.node.ObjectNode params = org.codehaus.jackson.node.JsonNodeFactory.instance.objectNode();
-        params.put("foo", "bar");
-        params.put("baz", "baz");
-        params.put("length",  "255");
-        avroStringSchema.addProp("connect.parameters", params);
+        avroStringSchema.addProp("connect.parameters", connectPropsMap);
         org.apache.avro.Schema avroSchema1 = org.apache.avro.SchemaBuilder
                 .record(TOPIC).fields()
                 .requiredBoolean("field1")
@@ -94,9 +101,23 @@ public class JsonToAvroSchemaConverterTest {
                 .name("field3").type(avroStringSchema).noDefault()
                 .endRecord();
         Schema connectSchema1 = avroData.toConnectSchema(avroSchema1);
-        ObjectNode jsonSchema = converter.asJsonSchema(connectSchema1);
-        Schema connectSchema2 = converter.asConnectSchema(jsonSchema);
+        ObjectNode jsonSchema1 = converter.asJsonSchema(connectSchema1);
+        Schema connectSchema2 = converter.asConnectSchema(jsonSchema1);
         org.apache.avro.Schema avroSchema2 = avroData.fromConnectSchema(connectSchema2);
+
+
+        Schema expectedSchema = SchemaBuilder
+                .struct().name(TOPIC)
+                .field("field1", Schema.BOOLEAN_SCHEMA)
+                .field("field2", Schema.STRING_SCHEMA)
+                .field("field3", SchemaBuilder.string().parameters(connectPropsMap))
+                .build();
+
+        ObjectNode jsonSchema2 = converter.asJsonSchema(expectedSchema);
+        Schema connectSchema3 = converter.asConnectSchema(jsonSchema2);
+        org.apache.avro.Schema avroSchema3 = avroData.fromConnectSchema(connectSchema3);
+
+
         assertEquals(avroSchema1,avroSchema2);
     }
 
@@ -151,6 +172,54 @@ public class JsonToAvroSchemaConverterTest {
                 .put("field3", field3Expected);
 
         String msg = "{ \"field1\": true, \"field2\": \"string\", \"field3\": { \"field4\": \"val\"} }";
+        SchemaAndValue converted = converter.toConnectData(TEST_TOPIC, msg.getBytes());
+        assertEquals(new SchemaAndValue(expectedSchema, expected), converted);
+    }
+
+    @Test
+    public void testNestedStructWithNullToConnect() throws IOException, RestClientException {
+        String TEST_TOPIC = "testNestedStructWithNullToConnect";
+
+        org.apache.avro.Schema nestedField4Schema = org.apache.avro.SchemaBuilder
+                .record("field4").fields()
+                .optionalString("field5")
+                .endRecord();
+
+        org.apache.avro.Schema nestedSchema = org.apache.avro.SchemaBuilder
+                .record("field3").fields()
+                .name("field4").type().optional().type(nestedField4Schema)
+                .endRecord();
+        org.apache.avro.Schema avroSchema1 = org.apache.avro.SchemaBuilder
+                .record(TEST_TOPIC).fields()
+                .requiredBoolean("field1")
+                .requiredString("field2")
+                .name("field3").type(nestedSchema).noDefault()
+                .endRecord();
+        schemaRegistry.register(TEST_TOPIC, avroSchema1);
+
+        Schema field4Schema = SchemaBuilder
+                .struct().optional().name("field4")
+                .field("field5",Schema.OPTIONAL_STRING_SCHEMA)
+                .build();
+
+        Schema field3Schema = SchemaBuilder
+                .struct().name("field3")
+                .field("field4", field4Schema)
+                .build();
+        Schema expectedSchema = SchemaBuilder
+                .struct().name(TEST_TOPIC)
+                .field("field1", Schema.BOOLEAN_SCHEMA)
+                .field("field2", Schema.STRING_SCHEMA)
+                .field("field3", field3Schema)
+                .build();
+        Struct field3Expected = new Struct(field3Schema)
+                .put("field4", null);
+        Struct expected = new Struct(expectedSchema)
+                .put("field1", true)
+                .put("field2", "string")
+                .put("field3", field3Expected);
+
+        String msg = "{ \"field1\": true, \"field2\": \"string\", \"field3\": { \"field4\":null} }";
         SchemaAndValue converted = converter.toConnectData(TEST_TOPIC, msg.getBytes());
         assertEquals(new SchemaAndValue(expectedSchema, expected), converted);
     }
