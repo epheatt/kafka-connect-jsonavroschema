@@ -1,9 +1,20 @@
 package com.github.epheatt.kafka.connect;
 
+
+import java.io.IOException;
+import java.time.format.DateTimeParseException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 
 import io.confluent.connect.avro.AvroConverterConfig;
 import io.confluent.connect.avro.AvroData;
@@ -15,25 +26,31 @@ import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import org.apache.kafka.common.cache.Cache;
 import org.apache.kafka.common.cache.LRUCache;
 import org.apache.kafka.common.cache.SynchronizedCache;
+import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.connect.data.Date;
+import org.apache.kafka.connect.data.Field;
+import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaAndValue;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.errors.DataException;
+import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.json.JsonDeserializer;
 import org.apache.kafka.connect.json.JsonSerializer;
-import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.SchemaAndValue;
-import org.apache.kafka.connect.errors.DataException;
-import org.apache.kafka.connect.errors.RetriableException;
-
-import java.util.Map;
-import java.util.HashMap;
-
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
-
-
+import org.apache.kafka.connect.storage.Converter;
+import org.apache.kafka.connect.storage.ConverterConfig;
+import org.apache.kafka.connect.storage.ConverterType;
+import org.apache.kafka.connect.storage.HeaderConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/** <p>
+ * This is a custom converter. It can be used to read kafka data which is in json string format. If schema is enable then it converts into embedded
+ * schema json format. It uses schema registry to fetch the schema for topic as subject. It assumes schema registry is returning avro schema. It
+ * enriches json data with respect to avro schema.
+ * </p> */
 public class JsonToAvroSchemaConverter extends JsonConverter {
     private static final Logger log = LoggerFactory.getLogger(JsonToAvroSchemaConverter.class);
 
@@ -45,16 +62,13 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
     private static final int SCHEMAS_CACHE_SIZE_DEFAULT = 1000;
     private static final String TYPE_CONFIG = "converter.type";
 
-    private enum ConverterType {
-        KEY, VALUE, HEADER
-    };
-
     private static final String ENVELOPE_SCHEMA_FIELD_NAME = "schema";
     private static final String ENVELOPE_PAYLOAD_FIELD_NAME = "payload";
     private static final String ENVELOPE_PAYLOAD_POINTER = "payload.pointer";
 
     private SchemaRegistryClient schemaRegistry;
     private boolean isKey;
+    private JsonToAvroSchemaConverterConfig conf;
     private AvroData avroData;
     private String payloadPointer;
 
@@ -63,14 +77,14 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
     private Cache<String, org.apache.avro.Schema> topicSchemaCache;
     private final JsonSerializer serializer = new JsonSerializer();
     private final JsonDeserializer deserializer = new JsonDeserializer();
-    //private final JsonConverter jsonConverter = new JsonConverter();
+    private final JsonConverter jsonConverter = new JsonConverter();
 
     public JsonToAvroSchemaConverter(SchemaRegistryClient client) {
         schemaRegistry = client;
     }
 
     public JsonToAvroSchemaConverter() {
-
+        // no code is required here
     }
 
     public void configure(Map<String, ?> configs) {
@@ -88,9 +102,11 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
         payloadPointer = (String) configs.getOrDefault(ENVELOPE_PAYLOAD_POINTER, null);
         serializer.configure(configs, isKey);
         deserializer.configure(configs, isKey);
-        super.configure(configs, isKey);
+        super.configure(configs);
+        jsonConverter.configure(configs);
         avroData = new AvroData(new AvroDataConfig(configs));
-        topicSchemaCache = new SynchronizedCache<>(new LRUCache<String, org.apache.avro.Schema>(cacheSize));
+        conf = new JsonToAvroSchemaConverterConfig(configs);
+        topicSchemaCache = new SynchronizedCache<>(new LRUCache<>(conf.getSchemaCacheSize()));
 
         if (schemaRegistry == null) {
             schemaRegistry = new CachedSchemaRegistryClient(avroConverterConfig.getSchemaRegistryUrls(),
@@ -100,16 +116,22 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
 
     @Override
     public void configure(Map<String, ?> configs, boolean isKey) {
-        Map<String, Object> conf = new HashMap<>(configs);
-        conf.put(TYPE_CONFIG, isKey ? ConverterType.KEY.name() : ConverterType.VALUE.name());
-        configure(conf);
+        Map<String, Object> configuration = new HashMap<>(configs);
+        configuration.put(ConverterConfig.TYPE_CONFIG, isKey ? ConverterType.KEY.name().toLowerCase() : ConverterType.VALUE.name().toLowerCase());
+        configure(configuration);
     }
 
     @Override
+    public ConfigDef config() {
+        return JsonToAvroSchemaConverterConfig.configDef();
+    }
+
+    /*
+    @Override
     public byte[] fromConnectData(String topic, Schema schema, Object value) {
-        //return jsonConverter.fromConnectData(topic, schema, value);
         return super.fromConnectData(topic, schema, value);
     }
+    */
 
     @Override
     public SchemaAndValue toConnectData(String topic, byte[] value) {
@@ -133,24 +155,34 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
             if (payloadPointer != null && !payloadPointer.isEmpty()) {
                 jsonValue = jsonValue.at(payloadPointer);
             }
-            envelope.set(ENVELOPE_PAYLOAD_FIELD_NAME, enrichJsonValueAsPerAvroSchema(schema, jsonValue));
+            envelope.set(ENVELOPE_PAYLOAD_FIELD_NAME, jsonValue);
             jsonValue = envelope;
         }
 
         try {
-            return super.toConnectData(topic, serializer.serialize(topic, jsonValue));
-            //return jsonConverter.toConnectData(topic, serializer.serialize(topic, jsonValue));
+            return jsonConverter.toConnectData(topic, serializer.serialize(topic, jsonValue));
         } catch (SerializationException e) {
             throw new DataException("Converting Kafka Connect data to byte[] failed due to serialization error: ", e);
         }
     }
 
-    /**
-     * Fetch avro schema from schema registry.
+    /*
+    @Override
+    public byte[] fromConnectHeader(String topic, String headerKey, Schema schema, Object value) {
+        return fromConnectData(topic, schema, value);
+    }
+
+    @Override
+    public SchemaAndValue toConnectHeader(String topic, String headerKey, byte[] value) {
+        return toConnectData(topic, value);
+    }
+    */
+    /** Fetch avro schema from schema registry.
      *
-     * @param subject the subject
-     * @return the schema
-     */
+     * @param subject
+     *            the subject
+     * @return the schema */
+    @SuppressWarnings("deprecation")
     private org.apache.avro.Schema fetchAvroSchemaFromSchemaRegistry(String subject) {
         org.apache.avro.Schema schema = topicSchemaCache.get(subject);
         if (schema == null) {
@@ -165,183 +197,6 @@ public class JsonToAvroSchemaConverter extends JsonConverter {
             }
         }
         return schema;
-    }
-
-    /*
-    private Object defaultMissingOptional(org.apache.avro.Schema schema, JsonNode jsonValue) {
-        if (jsonValue == null || jsonValue.isNull()) {
-            if (schema.defaultValue() != null)
-                return schema.defaultValue(); // any logical type conversions should already have been applied
-            if (schema.isOptional())
-                return null;
-            //throw new DataException("Invalid null value for required " + schema.type() +  " field");
-        }
-        return null;
-    }
-    */
-
-    /**
-     * Enrich json value as per avro schema.
-     *
-     * @param valueSchema the value schema
-     * @param value the value
-     * @return the object
-     */
-    private ObjectNode enrichJsonValueAsPerAvroSchema(org.apache.avro.Schema valueSchema, Object value) {
-        ObjectNode valueNode = mapper.convertValue(value, ObjectNode.class);
-        ObjectNode updatedNode = mapper.createObjectNode();
-        for (org.apache.avro.Schema.Field field : valueSchema.getFields()) {
-            updateValueAsPerAvroSchema(field, field.schema(), valueNode, updatedNode);
-        }
-        return updatedNode;
-    }
-
-    /**
-     * Update value as per avro schema.
-     *
-     * @param field the field
-     * @param valueSchema the value schema
-     * @param valueNode the value node
-     * @param updatedNode the updated node
-     */
-    private void updateValueAsPerAvroSchema(org.apache.avro.Schema.Field field, org.apache.avro.Schema valueSchema, ObjectNode valueNode,
-            ObjectNode updatedNode) {
-        String fieldName = field.name();
-        switch (valueSchema.getType()) {
-            case UNION:
-                for (org.apache.avro.Schema unionSchema : field.schema().getTypes()) {
-                    if (unionSchema.getType().equals(org.apache.avro.Schema.Type.NULL)) {
-                        continue;
-                    } else {
-                        updateValueAsPerAvroSchema(field, unionSchema, valueNode, updatedNode);
-                    }
-                }
-                break;
-            case ARRAY:
-                updateValueAsPerArraySchema(field, valueSchema, valueNode, updatedNode, fieldName);
-                break;
-            case RECORD:
-                JsonNode recordValue = valueNode.get(fieldName);
-                if (!isNullNodeORValue(recordValue)) {
-                    ObjectNode recordNode = mapper.createObjectNode();
-                    for (org.apache.avro.Schema.Field recordField : valueSchema.getFields()) {
-                        updateValueAsPerAvroSchema(recordField, recordField.schema(), (ObjectNode) valueNode.get(fieldName), recordNode);
-                    }
-                    updatedNode.set(fieldName, recordNode);
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-
-                break;
-            case STRING:
-                JsonNode fieldValue = valueNode.get(fieldName);
-                if (!isNullNodeORValue(fieldValue)) {
-                    updatedNode.put(fieldName, fieldValue.asText());
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-
-                break;
-            case INT:
-                JsonNode intValue = valueNode.get(fieldName);
-                if (!isNullNodeORValue(intValue)) {
-                    updatedNode.put(fieldName, intValue.asInt());
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-                break;
-            case LONG:
-                JsonNode longValue = valueNode.get(field.name());
-                if (!isNullNodeORValue(longValue)) {
-                    long longVal;
-                    if (TIMESTAMP_MILLIS.equals(valueSchema.getProp("logicalType"))) {
-                        try {
-                            longVal = Instant.parse(longValue.asText()).toEpochMilli();
-                        } catch (DateTimeParseException e) {
-                            log.error("Incorrect date string in record : " + longValue);
-                            updatedNode.set(fieldName, null);
-                            break;
-                        }
-                    } else {
-                        longVal = longValue.asLong();
-                    }
-                    updatedNode.put(fieldName, longVal);
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-                break;
-            case DOUBLE:
-                JsonNode doubleValue = valueNode.get(field.name());
-                if (!isNullNodeORValue(doubleValue)) {
-                    updatedNode.put(fieldName, doubleValue.asDouble());
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-                break;
-            case BOOLEAN:
-                JsonNode boolValue = valueNode.get(fieldName);
-                if (!isNullNodeORValue(boolValue)) {
-                    updatedNode.put(fieldName, boolValue.asBoolean());
-                } else {
-                    updatedNode.set(fieldName, null);
-                }
-                break;
-            default:
-                log.error(valueSchema.getName() + "not defined" + valueSchema.getType());
-        }
-    }
-
-    /**
-     * Update value as per array schema.
-     *
-     * @param field
-     *            the field
-     * @param valueSchema
-     *            the value schema
-     * @param valueNode
-     *            the value node
-     * @param updatedNode
-     *            the updated node
-     * @param fieldName
-     *            the field name
-     */
-    private void updateValueAsPerArraySchema(org.apache.avro.Schema.Field field, org.apache.avro.Schema valueSchema, ObjectNode valueNode,
-            ObjectNode updatedNode, String fieldName) {
-        ArrayNode arrayValue = (ArrayNode) valueNode.get(fieldName);
-        org.apache.avro.Schema arrayElementType = valueSchema.getElementType();
-        org.apache.avro.Schema unionSch = null;
-        for (org.apache.avro.Schema unionSchema : arrayElementType.getTypes()) {
-            if (unionSchema.getType().equals(org.apache.avro.Schema.Type.NULL)) {
-                continue;
-            } else {
-                unionSch = unionSchema;
-            }
-        }
-        if (!isNullNodeORValue(arrayValue)) {
-            ArrayNode updatedArrayNode = mapper.createArrayNode();
-            for (JsonNode arrayElement : arrayValue) {
-                if (!isNullNodeORValue(arrayElement)) {
-                    if (unionSch.getType().getName().equals(org.apache.avro.Schema.Type.RECORD.name().toLowerCase())) {
-                        ObjectNode recordNode = mapper.createObjectNode();
-                        for (org.apache.avro.Schema.Field recordField : unionSch.getFields()) {
-                            updateValueAsPerAvroSchema(recordField, recordField.schema(), (ObjectNode) arrayElement, recordNode);
-                        }
-                        updatedArrayNode.add(recordNode);
-                    } else {
-                        updatedArrayNode.add(arrayElement);
-                    }
-                } else {
-                    updatedArrayNode.add(arrayElement);
-                }
-            }
-            updatedNode.set(fieldName, updatedArrayNode);
-        } else {
-            updatedNode.set(fieldName, null);
-        }
-    }
-
-    private boolean isNullNodeORValue(JsonNode nodeValue) {
-        return nodeValue == null || nodeValue.isNull();
     }
 
 }
