@@ -46,7 +46,7 @@
         <joda.version>1.6.2</joda.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <confluent.maven.repo>http://packages.confluent.io/maven/</confluent.maven.repo>
-        <jackson.version>2.12.3</jackson.version>
+        <jackson.version>2.12.4</jackson.version>
         <jackson-databind.version>2.9.10.8</jackson-databind.version>
     </properties>
     <repositories>
