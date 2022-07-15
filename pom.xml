@@ -47,7 +47,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <confluent.maven.repo>http://packages.confluent.io/maven/</confluent.maven.repo>
         <jackson.version>2.12.3</jackson.version>
-        <jackson-databind.version>2.9.10.8</jackson-databind.version>
+        <jackson-databind.version>2.12.6.1</jackson-databind.version>
     </properties>
     <repositories>
         <repository>
